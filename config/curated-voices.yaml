@@ -1,0 +1,110 @@
+# Curated Piper Voices for utts Voice Manager
+#
+# Edit this file to customize which voices appear in the Download tab.
+# Remove voices you don't like, add new ones from:
+#   https://huggingface.co/rhasspy/piper-voices/tree/main/en
+#
+# Format:
+#   - id: voice-model-name (without .onnx extension)
+#     desc: Short description
+#     recommended: true/false (starred in UI)
+#
+# Quality tiers: low (~16kHz), medium (~22kHz), high (~22kHz, larger model)
+# Generally medium is best balance of quality vs size.
+
+# US English - Recommended
+- id: en_US-lessac-medium
+  desc: "Neutral US, clear articulation"
+  recommended: true
+
+- id: en_US-ryan-medium
+  desc: "US male, warm tone"
+  recommended: true
+
+- id: en_US-amy-medium
+  desc: "US female, professional"
+  recommended: true
+
+- id: en_US-joe-medium
+  desc: "US male, deeper voice"
+  recommended: true
+
+- id: en_US-kristin-medium
+  desc: "US female, bright"
+  recommended: true
+
+# UK English - Recommended
+- id: en_GB-alan-medium
+  desc: "UK male, warm British"
+  recommended: true
+
+- id: en_GB-cori-medium
+  desc: "UK female, professional"
+  recommended: true
+
+- id: en_GB-alba-medium
+  desc: "Scottish female"
+  recommended: true
+
+- id: en_GB-northern_english_male-medium
+  desc: "Northern UK accent"
+  recommended: true
+
+# Additional US voices
+- id: en_US-bryce-medium
+  desc: "US male, casual"
+  recommended: false
+
+- id: en_US-kusal-medium
+  desc: "US male, tech-focused"
+  recommended: false
+
+- id: en_US-norman-medium
+  desc: "US male, narrative"
+  recommended: false
+
+- id: en_US-john-medium
+  desc: "US male, conversational"
+  recommended: false
+
+- id: en_US-hfc_male-medium
+  desc: "US male, HiFi quality"
+  recommended: false
+
+- id: en_US-hfc_female-medium
+  desc: "US female, HiFi quality"
+  recommended: false
+
+# Additional UK voices
+- id: en_GB-jenny_dioco-medium
+  desc: "UK female, conversational"
+  recommended: false
+
+- id: en_GB-semaine-medium
+  desc: "UK, expressive"
+  recommended: false
+
+- id: en_GB-aru-medium
+  desc: "UK neutral"
+  recommended: false
+
+# High quality variants (larger files, ~100MB each)
+- id: en_US-lessac-high
+  desc: "US neutral, highest quality"
+  recommended: false
+
+- id: en_US-ryan-high
+  desc: "US male, highest quality"
+  recommended: false
+
+- id: en_GB-cori-high
+  desc: "UK female, highest quality"
+  recommended: false
+
+- id: en_US-libritts-high
+  desc: "US audiobook quality"
+  recommended: false
+
+- id: en_US-ljspeech-high
+  desc: "US female classic, high quality"
+  recommended: false

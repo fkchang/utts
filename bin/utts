@@ -30,14 +30,17 @@
 
 require 'optparse'
 require 'fileutils'
+require 'yaml'
+require 'json'
 
 # Resolve script location for UTTS_DIR default
 SCRIPT_DIR = File.dirname(File.realpath(__FILE__))
 UTTS_DIR = ENV.fetch('UTTS_DIR', File.expand_path('..', SCRIPT_DIR))
 
-# Mute control
+# Mute control & config
 CONFIG_DIR = File.expand_path('~/.config/utts')
 MUTED_FILE = File.join(CONFIG_DIR, 'muted')
+VOICE_CONFIG_FILE = File.join(CONFIG_DIR, 'voice-mappings.yaml')
 
 # Configuration
 DEFAULT_RATE = ENV.fetch('TTS_RATE', '200')
@@ -83,6 +86,26 @@ DEFAULT_VOICES = {
   'piper' => 'en_US-lessac-medium',
   'espeak' => 'en'
 }.freeze
+
+# Load voice mappings from YAML config file (falls back to defaults)
+def load_voice_mappings
+  return AGENT_VOICES unless File.exist?(VOICE_CONFIG_FILE)
+
+  begin
+    loaded = YAML.safe_load(File.read(VOICE_CONFIG_FILE)) || {}
+    # Merge with defaults to ensure all keys exist
+    result = {}
+    AGENT_VOICES.each do |engine, agents|
+      result[engine] = agents.dup
+      if loaded[engine].is_a?(Hash)
+        loaded[engine].each { |agent, voice| result[engine][agent] = voice }
+      end
+    end
+    result
+  rescue StandardError
+    AGENT_VOICES
+  end
+end
 
 # --- Engine Detection ---
 
@@ -146,11 +169,23 @@ end
 
 def speak_piper(message, voice)
   voice_path = File.join(UTTS_DIR, 'voices', "#{voice}.onnx")
+  config_path = "#{voice_path}.json"
 
   unless File.exist?(voice_path)
     warn "Piper voice not found: #{voice_path}"
     warn "Available voices: #{list_piper_voices.join(', ')}"
     exit 1
+  end
+
+  # Read sample rate from voice config (default 22050 for medium/high quality)
+  sample_rate = 22050
+  if File.exist?(config_path)
+    begin
+      config = JSON.parse(File.read(config_path))
+      sample_rate = config.dig('audio', 'sample_rate') || 22050
+    rescue StandardError
+      # Use default if config can't be read
+    end
   end
 
   piper_bin = File.join(UTTS_DIR, '.venv', 'bin', 'piper')
@@ -164,7 +199,7 @@ def speak_piper(message, voice)
         "'#{escaped_piper}' " \
         "--model '#{escaped_voice}' " \
         "--output-raw 2>/dev/null | " \
-        "play -q -r 22050 -b 16 -e signed -c 1 -t raw -"
+        "play -q -r #{sample_rate} -b 16 -e signed -c 1 -t raw -"
 
   system(cmd)
 end
@@ -220,9 +255,13 @@ end
 
 def list_agents(engine)
   puts "Agent voice mappings for '#{engine}' engine:"
-  voices = AGENT_VOICES[engine] || AGENT_VOICES['say']
+  mappings = load_voice_mappings
+  voices = mappings[engine] || mappings['say']
   voices.each do |agent, voice|
     puts "  #{agent.ljust(16)} => #{voice}"
+  end
+  if File.exist?(VOICE_CONFIG_FILE)
+    puts "\n  (loaded from #{VOICE_CONFIG_FILE})"
   end
 end
 
@@ -337,7 +376,8 @@ end
 voice = if options[:voice]
           options[:voice]
         elsif options[:agent]
-          agent_voices = AGENT_VOICES[engine] || AGENT_VOICES['say']
+          mappings = load_voice_mappings
+          agent_voices = mappings[engine] || mappings['say']
           agent_voices[options[:agent]] || agent_voices['default']
         else
           ENV['TTS_VOICE'] || DEFAULT_VOICES[engine]

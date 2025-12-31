@@ -62,14 +62,19 @@ Test:
 utts "Hello from Piper neural TTS"
 ```
 
-### Tier 3: Premium (+ StreamWeaver Wizard)
+### Tier 3: Premium (+ StreamWeaver Tools)
 
-Interactive browser-based setup:
+Interactive browser-based setup and voice manager:
 
 ```bash
 cd ~/utts
 bundle install
+
+# Initial setup wizard
 ruby scripts/setup.rb
+
+# Voice manager (configure mappings, test voices, download)
+ruby scripts/configure.rb
 ```
 
 Requires modern Ruby (3.0+) and bundler.
@@ -128,6 +133,22 @@ Use with `--agent TYPE`:
 utts "Exploration complete" --agent explore
 ```
 
+### Custom Mappings
+
+Voice mappings can be customized via YAML config:
+
+```yaml
+# ~/.config/utts/voice-mappings.yaml
+say:
+  default: Alex
+  explore: Daniel
+piper:
+  default: en_US-ryan-medium
+  explore: en_GB-cori-medium
+```
+
+Use the voice manager GUI (`ruby scripts/configure.rb`) or edit manually.
+
 ## Runtime Mute
 
 Silence TTS without restarting your terminal:
@@ -165,11 +186,15 @@ Perfect for meetings - mute, do your thing, unmute.
 ```
 utts/
 ├── bin/utts              # Main CLI (stdlib only)
+├── lib/
+│   └── voice_config.rb   # Voice config management
 ├── scripts/
 │   ├── setup.sh          # Tier 2 installer
-│   ├── setup.rb          # Tier 3 wizard
+│   ├── setup.rb          # Tier 3 setup wizard
+│   ├── configure.rb      # Tier 3 voice manager
 │   ├── download-voices.sh
 │   └── list-voices.sh
+├── docs/plans/           # Design documents
 ├── voices/               # Piper voice models
 ├── .venv/                # Python venv (after setup)
 ├── Gemfile               # Ruby deps (Tier 3)

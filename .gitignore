@@ -1,0 +1,17 @@
+# Voice model files (large binaries, download separately)
+voices/*.onnx
+voices/*.onnx.json
+
+# Python virtual env
+.venv/
+
+# Ruby
+*.gem
+.bundle/
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+*.swp
