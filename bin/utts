@@ -1,0 +1,354 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# utts - Unified Text-to-Speech CLI
+# Supports Piper neural TTS, macOS 'say', and Linux espeak-ng
+#
+# Usage: utts "message" [options]
+#
+# Options:
+#   --engine ENGINE    TTS engine: 'piper', 'say', or 'espeak' (auto-detected)
+#   --voice VOICE      Specific voice name (engine-dependent)
+#   --agent TYPE       Use agent-specific voice mapping
+#   --rate RATE        Speaking rate for 'say' engine (default: 200)
+#   --mute             Mute TTS (creates control file)
+#   --unmute           Unmute TTS (removes control file)
+#   --status           Show mute status
+#   --list-voices      List available voices for current engine
+#   --list-agents      List agent voice mappings
+#   -h, --help         Show this help
+#
+# Environment Variables:
+#   UTTS_DIR           utts installation path (default: auto-detect from script location)
+#   TTS_VOICE          Default voice
+#   TTS_RATE           Speaking rate for 'say' (default: 200)
+#
+# Tiers:
+#   1. Minimal: Clone only - uses say (macOS) or espeak (Linux)
+#   2. Standard: + Piper - high-quality neural voices
+#   3. Premium: + StreamWeaver - interactive setup wizard
+
+require 'optparse'
+require 'fileutils'
+
+# Resolve script location for UTTS_DIR default
+SCRIPT_DIR = File.dirname(File.realpath(__FILE__))
+UTTS_DIR = ENV.fetch('UTTS_DIR', File.expand_path('..', SCRIPT_DIR))
+
+# Mute control
+CONFIG_DIR = File.expand_path('~/.config/utts')
+MUTED_FILE = File.join(CONFIG_DIR, 'muted')
+
+# Configuration
+DEFAULT_RATE = ENV.fetch('TTS_RATE', '200')
+
+# Agent voice mappings
+AGENT_VOICES = {
+  'say' => {
+    'default'         => 'Samantha',
+    'general-purpose' => 'Alex',
+    'explore'         => 'Daniel',
+    'researcher'      => 'Karen',
+    'engineer'        => 'Fred',
+    'architect'       => 'Reed (English (UK))',
+    'designer'        => 'Moira',
+    'pentester'       => 'Rishi',
+    'writer'          => 'Tessa',
+    'plan'            => 'Karen',
+    'code-reviewer'   => 'Moira',
+    'intern'          => 'Tessa'
+  },
+  'piper' => {
+    'default'         => 'en_US-lessac-medium',
+    'general-purpose' => 'en_US-ryan-medium',
+    'explore'         => 'en_GB-alan-medium',
+    'researcher'      => 'en_US-amy-medium',
+    'engineer'        => 'en_US-joe-medium',
+    'architect'       => 'en_GB-northern_english_male-medium',
+    'designer'        => 'en_GB-cori-medium',
+    'pentester'       => 'en_US-kusal-medium',
+    'writer'          => 'en_GB-alba-medium',
+    'plan'            => 'en_US-amy-medium',
+    'code-reviewer'   => 'en_GB-cori-medium',
+    'intern'          => 'en_US-kristin-medium'
+  },
+  'espeak' => {
+    'default' => 'en'  # Basic espeak, no custom mappings
+  }
+}.freeze
+
+# Default voices per engine
+DEFAULT_VOICES = {
+  'say' => 'Samantha',
+  'piper' => 'en_US-lessac-medium',
+  'espeak' => 'en'
+}.freeze
+
+# --- Engine Detection ---
+
+def piper_available?
+  piper_bin = File.join(UTTS_DIR, '.venv', 'bin', 'piper')
+  voices_dir = File.join(UTTS_DIR, 'voices')
+  File.executable?(piper_bin) && Dir.exist?(voices_dir) && !Dir.glob(File.join(voices_dir, '*.onnx')).empty?
+end
+
+def say_available?
+  RUBY_PLATFORM.include?('darwin') && File.executable?('/usr/bin/say')
+end
+
+def espeak_available?
+  system('which espeak-ng > /dev/null 2>&1') || system('which espeak > /dev/null 2>&1')
+end
+
+def detect_engine
+  return 'piper' if piper_available?
+  return 'say' if say_available?
+  return 'espeak' if espeak_available?
+  nil
+end
+
+# --- Mute Control ---
+
+def muted?
+  File.exist?(MUTED_FILE)
+end
+
+def mute!
+  FileUtils.mkdir_p(CONFIG_DIR)
+  FileUtils.touch(MUTED_FILE)
+  puts "🔇 TTS muted"
+end
+
+def unmute!
+  FileUtils.rm_f(MUTED_FILE)
+  puts "🔊 TTS unmuted"
+end
+
+def show_status
+  if muted?
+    puts "🔇 TTS is MUTED"
+    puts "   Control file: #{MUTED_FILE}"
+    puts "   Run: utts --unmute"
+  else
+    engine = detect_engine
+    puts "🔊 TTS is ACTIVE"
+    puts "   Engine: #{engine || 'none available'}"
+    puts "   UTTS_DIR: #{UTTS_DIR}"
+    puts "   Run: utts --mute (to silence)"
+  end
+end
+
+# --- TTS Engines ---
+
+def speak_say(message, voice, rate)
+  system('/usr/bin/say', '-v', voice, '-r', rate, message)
+end
+
+def speak_piper(message, voice)
+  voice_path = File.join(UTTS_DIR, 'voices', "#{voice}.onnx")
+
+  unless File.exist?(voice_path)
+    warn "Piper voice not found: #{voice_path}"
+    warn "Available voices: #{list_piper_voices.join(', ')}"
+    exit 1
+  end
+
+  piper_bin = File.join(UTTS_DIR, '.venv', 'bin', 'piper')
+
+  # Escape for shell
+  escaped_msg = message.gsub("'", "'\\''")
+  escaped_piper = piper_bin.gsub("'", "'\\''")
+  escaped_voice = voice_path.gsub("'", "'\\''")
+
+  cmd = "echo '#{escaped_msg}' | " \
+        "'#{escaped_piper}' " \
+        "--model '#{escaped_voice}' " \
+        "--output-raw 2>/dev/null | " \
+        "play -q -r 22050 -b 16 -e signed -c 1 -t raw -"
+
+  system(cmd)
+end
+
+def speak_espeak(message, voice)
+  espeak_cmd = system('which espeak-ng > /dev/null 2>&1') ? 'espeak-ng' : 'espeak'
+  system(espeak_cmd, '-v', voice, message)
+end
+
+# --- Voice Listing ---
+
+def list_say_voices
+  output = `say -v '?'`
+  output.lines.map { |line| line.split.first }.sort
+end
+
+def list_piper_voices
+  voices_dir = File.join(UTTS_DIR, 'voices')
+  return [] unless Dir.exist?(voices_dir)
+
+  Dir.glob(File.join(voices_dir, '*.onnx')).map do |f|
+    File.basename(f, '.onnx')
+  end.sort
+end
+
+def list_espeak_voices
+  espeak_cmd = system('which espeak-ng > /dev/null 2>&1') ? 'espeak-ng' : 'espeak'
+  output = `#{espeak_cmd} --voices 2>/dev/null`
+  output.lines.drop(1).map { |line| line.split[4] }.compact.uniq.sort
+rescue
+  ['en', 'en-us', 'en-gb']
+end
+
+def list_voices(engine)
+  case engine
+  when 'say'
+    puts "macOS 'say' voices:"
+    list_say_voices.each { |v| puts "  #{v}" }
+  when 'piper'
+    puts "Piper TTS voices (in #{UTTS_DIR}/voices/):"
+    voices = list_piper_voices
+    if voices.empty?
+      puts "  (none installed - run scripts/setup.sh)"
+    else
+      voices.each { |v| puts "  #{v}" }
+    end
+  when 'espeak'
+    puts "espeak voices:"
+    list_espeak_voices.take(20).each { |v| puts "  #{v}" }
+    puts "  ..."
+  end
+end
+
+def list_agents(engine)
+  puts "Agent voice mappings for '#{engine}' engine:"
+  voices = AGENT_VOICES[engine] || AGENT_VOICES['say']
+  voices.each do |agent, voice|
+    puts "  #{agent.ljust(16)} => #{voice}"
+  end
+end
+
+def sanitize_message(message)
+  message.gsub(/[^a-zA-Z0-9\s.,!?'\-]/, '').strip[0, 500]
+end
+
+# --- Main ---
+
+options = {
+  engine: nil,  # auto-detect
+  voice: nil,
+  agent: nil,
+  rate: DEFAULT_RATE
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: utts \"message\" [options]"
+
+  opts.on('--engine ENGINE', %w[say piper espeak], "TTS engine (auto-detected)") do |e|
+    options[:engine] = e
+  end
+
+  opts.on('--voice VOICE', 'Specific voice name') do |v|
+    options[:voice] = v
+  end
+
+  opts.on('--agent TYPE', 'Use agent-specific voice mapping') do |a|
+    options[:agent] = a.downcase
+  end
+
+  opts.on('--rate RATE', 'Speaking rate for say engine') do |r|
+    options[:rate] = r
+  end
+
+  opts.on('--mute', 'Mute TTS') do
+    mute!
+    exit 0
+  end
+
+  opts.on('--unmute', 'Unmute TTS') do
+    unmute!
+    exit 0
+  end
+
+  opts.on('--status', 'Show mute status') do
+    show_status
+    exit 0
+  end
+
+  opts.on('--list-voices', 'List available voices') do
+    engine = options[:engine] || detect_engine || 'say'
+    list_voices(engine)
+    exit 0
+  end
+
+  opts.on('--list-agents', 'List agent voice mappings') do
+    engine = options[:engine] || detect_engine || 'say'
+    list_agents(engine)
+    exit 0
+  end
+
+  opts.on('-h', '--help', 'Show this help') do
+    puts opts
+    puts "\nDetected engine: #{detect_engine || 'none'}"
+    puts "UTTS_DIR: #{UTTS_DIR}"
+    exit 0
+  end
+end
+
+begin
+  parser.parse!
+rescue OptionParser::InvalidOption => e
+  warn e.message
+  warn parser
+  exit 1
+end
+
+# Check mute status
+if muted?
+  exit 0  # Silent exit when muted
+end
+
+# Get message
+message = ARGV.join(' ')
+
+if message.empty?
+  warn "No message provided"
+  warn parser
+  exit 1
+end
+
+# Sanitize
+safe_message = sanitize_message(message)
+if safe_message.empty?
+  warn "Message contains no speakable content after sanitization"
+  exit 1
+end
+
+# Detect or use specified engine
+engine = options[:engine] || detect_engine
+
+unless engine
+  warn "No TTS engine available."
+  warn "  macOS: 'say' should be built-in"
+  warn "  Linux: install espeak-ng (apt install espeak-ng)"
+  warn "  Any: run scripts/setup.sh for Piper neural TTS"
+  exit 1
+end
+
+# Determine voice
+voice = if options[:voice]
+          options[:voice]
+        elsif options[:agent]
+          agent_voices = AGENT_VOICES[engine] || AGENT_VOICES['say']
+          agent_voices[options[:agent]] || agent_voices['default']
+        else
+          ENV['TTS_VOICE'] || DEFAULT_VOICES[engine]
+        end
+
+# Speak
+case engine
+when 'say'
+  speak_say(safe_message, voice, options[:rate])
+when 'piper'
+  speak_piper(safe_message, voice)
+when 'espeak'
+  speak_espeak(safe_message, voice)
+end

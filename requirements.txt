@@ -1,0 +1,5 @@
+# Python dependencies for Piper TTS
+# Install with: pip install -r requirements.txt
+
+piper-tts>=1.2.0
+onnxruntime>=1.15.0
