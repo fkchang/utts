@@ -62,22 +62,58 @@ Test:
 utts "Hello from Piper neural TTS"
 ```
 
-### Tier 3: Premium (+ StreamWeaver Tools)
+### Tier 3: Premium (+ StreamWeaver UI)
 
-Interactive browser-based setup and voice manager:
+Interactive browser-based tools powered by [StreamWeaver](https://github.com/fkchang/stream_weaver):
 
 ```bash
 cd ~/utts
 bundle install
-
-# Initial setup wizard
-ruby scripts/setup.rb
-
-# Voice manager (configure mappings, test voices, download)
-ruby scripts/configure.rb
 ```
 
-Requires modern Ruby (3.0+) and bundler.
+#### Voice Manager
+
+Configure voice mappings, test voices, and manage Piper voice downloads:
+
+```bash
+ruby scripts/configure.rb
+# uses StreamWeaver, automatically finds an open port and opens on that port
+```
+
+**Test Voices** - Audition any installed voice with custom phrases:
+
+![Voice Manager - Test Voices](docs/images/voice-manager-test.png)
+
+- Toggle between Piper neural voices and macOS say voices
+- Enter custom test phrases or use defaults
+- Voices grouped by region (US English, UK English)
+
+**Agent Mappings** - Assign distinct voices to AI agent types:
+
+![Voice Manager - Agent Mappings](docs/images/voice-manager-mappings.png)
+
+- Map agents (explore, researcher, engineer, etc.) to specific voices
+- Test mappings before saving
+- Persists to `~/.config/utts/voice-mappings.yaml`
+
+**Manage Voices** - Download and delete Piper voice models:
+
+![Voice Manager - Manage Voices](docs/images/voice-manager-manage.png)
+
+- See installed voices with file sizes and total disk usage
+- Delete voices you don't like (easy to re-download)
+- Download from curated list of recommended voices
+- Edit `config/curated-voices.yaml` to customize available voices
+
+#### Setup Wizard
+
+First-time setup with guided configuration:
+
+```bash
+ruby scripts/setup.rb
+```
+
+Requires Ruby 3.0+ and bundler.
 
 ## Usage
 
