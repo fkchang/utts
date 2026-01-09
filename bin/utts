@@ -16,6 +16,11 @@
 #   --status           Show mute status
 #   --list-voices      List available voices for current engine
 #   --list-agents      List agent voice mappings
+#   --caller NAME      Caller identifier for notification logging
+#   --metadata JSON    JSON metadata for notification (including actions)
+#   --history [N]      Show last N notifications (default: 10)
+#   --replay [ID]      Replay notification (most recent if no ID)
+#   --silent           Log notification without audio or system notification
 #   -h, --help         Show this help
 #
 # Environment Variables:
@@ -269,6 +274,87 @@ def sanitize_message(message)
   message.gsub(/[^a-zA-Z0-9\s.,!?'\-]/, '').strip[0, 500]
 end
 
+# --- Notification Logging ---
+
+def notifications_available?
+  notifications_lib = File.join(UTTS_DIR, 'lib', 'utts', 'notifications.rb')
+  File.exist?(notifications_lib)
+end
+
+def require_notifications
+  notifications_lib = File.join(UTTS_DIR, 'lib', 'utts', 'notifications.rb')
+  require notifications_lib
+end
+
+def log_notification(message, options, voice)
+  return unless notifications_available?
+
+  begin
+    require_notifications
+    Utts::Notifications.log(
+      text: message,
+      caller: options[:caller],
+      agent: options[:agent],
+      voice: voice,
+      metadata: options[:metadata] || {}
+    )
+  rescue StandardError => e
+    warn "Notification logging failed: #{e.message}" if ENV['UTTS_DEBUG']
+  end
+end
+
+def show_history(limit)
+  unless notifications_available?
+    warn "Notification history requires Tier 3 (bundle install)"
+    exit 1
+  end
+
+  require_notifications
+  notifications = Utts::Notifications.list(limit: limit, include_dismissed: true)
+
+  if notifications.empty?
+    puts "No notifications in history"
+    return
+  end
+
+  puts "Last #{[limit, notifications.size].min} notifications:\n\n"
+  notifications.each do |n|
+    time = Time.parse(n.timestamp).localtime.strftime('%b %d %H:%M')
+    status = n.dismissed? ? '✓' : '○'
+    caller_str = n.caller ? "  #{n.caller}" : ''
+    puts "#{status} [#{n.id}] #{time}#{caller_str}"
+    puts "  \"#{n.text}\""
+    puts
+  end
+end
+
+def replay_notification(id_or_latest)
+  unless notifications_available?
+    warn "Replay requires Tier 3 (bundle install)"
+    exit 1
+  end
+
+  require_notifications
+
+  if id_or_latest == :latest
+    notifications = Utts::Notifications.list(limit: 1)
+    if notifications.empty?
+      warn "No notifications to replay"
+      exit 1
+    end
+    notification = notifications.first
+  else
+    notification = Utts::Notifications.find(id_or_latest)
+    unless notification
+      warn "Notification not found: #{id_or_latest}"
+      exit 1
+    end
+  end
+
+  puts "Replaying: \"#{notification.text}\""
+  Utts::Notifications.replay(notification.id)
+end
+
 # --- Main ---
 
 options = {
@@ -324,6 +410,31 @@ parser = OptionParser.new do |opts|
     exit 0
   end
 
+  opts.on('--caller CALLER', 'Caller identifier for notification logging') do |c|
+    options[:caller] = c
+  end
+
+  opts.on('--metadata JSON', 'JSON metadata for notification') do |m|
+    begin
+      options[:metadata] = JSON.parse(m)
+    rescue JSON::ParserError
+      warn "Invalid JSON for --metadata"
+      exit 1
+    end
+  end
+
+  opts.on('--history [N]', Integer, 'Show last N notifications (default: 10)') do |n|
+    options[:history] = n || 10
+  end
+
+  opts.on('--replay [ID]', 'Replay notification (most recent if no ID)') do |id|
+    options[:replay] = id || :latest
+  end
+
+  opts.on('--silent', 'Log notification without audio or system notification') do
+    options[:silent] = true
+  end
+
   opts.on('-h', '--help', 'Show this help') do
     puts opts
     puts "\nDetected engine: #{detect_engine || 'none'}"
@@ -340,9 +451,29 @@ rescue OptionParser::InvalidOption => e
   exit 1
 end
 
-# Check mute status
-if muted?
-  exit 0  # Silent exit when muted
+# Handle --history
+if options[:history]
+  show_history(options[:history])
+  exit 0
+end
+
+# Handle --replay
+if options[:replay]
+  replay_notification(options[:replay])
+  exit 0
+end
+
+# Check mute status - but still log if not silent
+if muted? && !options[:silent]
+  # Log notification even when muted (unless --silent)
+  message = ARGV.join(' ')
+  unless message.empty?
+    safe_message = sanitize_message(message)
+    engine = options[:engine] || detect_engine || 'say'
+    voice = options[:voice] || DEFAULT_VOICES[engine]
+    log_notification(safe_message, options, voice) unless safe_message.empty?
+  end
+  exit 0
 end
 
 # Get message
@@ -383,12 +514,17 @@ voice = if options[:voice]
           ENV['TTS_VOICE'] || DEFAULT_VOICES[engine]
         end
 
-# Speak
-case engine
-when 'say'
-  speak_say(safe_message, voice, options[:rate])
-when 'piper'
-  speak_piper(safe_message, voice)
-when 'espeak'
-  speak_espeak(safe_message, voice)
+# Speak (unless --silent)
+unless options[:silent]
+  case engine
+  when 'say'
+    speak_say(safe_message, voice, options[:rate])
+  when 'piper'
+    speak_piper(safe_message, voice)
+  when 'espeak'
+    speak_espeak(safe_message, voice)
+  end
 end
+
+# Log notification
+log_notification(safe_message, options, voice)
