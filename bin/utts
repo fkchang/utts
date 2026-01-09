@@ -16,10 +16,15 @@
 #   --status           Show mute status
 #   --list-voices      List available voices for current engine
 #   --list-agents      List agent voice mappings
-#   --caller NAME      Caller identifier for notification logging
+#   --caller NAME      Caller identifier (project name)
+#   --intent TEXT      Session intent (combines with --caller as "caller: intent")
 #   --metadata JSON    JSON metadata for notification (including actions)
 #   --history [N]      Show last N notifications (default: 10)
 #   --replay [ID]      Replay notification (most recent if no ID)
+#   --activate [ID]    Trigger action for notification (most recent if no ID)
+#   --dismiss [ID]     Dismiss notification (most recent if no ID)
+#   --dismiss-all      Dismiss all notifications
+#   --notifications    Open notification dashboard (StreamWeaver UI)
 #   --silent           Log notification without audio or system notification
 #   -h, --help         Show this help
 #
@@ -286,18 +291,36 @@ def require_notifications
   require notifications_lib
 end
 
-def log_notification(message, options, voice)
+def log_notification(message, options, voice, send_system_notification: true)
   return unless notifications_available?
 
   begin
     require_notifications
+
+    # Combine caller and intent: "project: session intent"
+    caller_str = options[:caller]
+    if caller_str && options[:intent]
+      caller_str = "#{caller_str}: #{options[:intent]}"
+    elsif options[:intent]
+      caller_str = options[:intent]
+    end
+
     Utts::Notifications.log(
       text: message,
-      caller: options[:caller],
+      caller: caller_str,
       agent: options[:agent],
       voice: voice,
       metadata: options[:metadata] || {}
     )
+
+    # Send macOS notification (unless --silent)
+    if send_system_notification
+      Utts::MacosNotifier.send_notification(
+        notification_text: message,
+        caller_name: caller_str,
+        muted: muted?
+      )
+    end
   rescue StandardError => e
     warn "Notification logging failed: #{e.message}" if ENV['UTTS_DEBUG']
   end
@@ -355,6 +378,110 @@ def replay_notification(id_or_latest)
   Utts::Notifications.replay(notification.id)
 end
 
+def activate_notification(id_or_latest)
+  unless notifications_available?
+    warn "Activate requires Tier 3 (bundle install)"
+    exit 1
+  end
+
+  require_notifications
+
+  if id_or_latest == :latest
+    notifications = Utts::Notifications.list(limit: 1)
+    if notifications.empty?
+      warn "No notifications to activate"
+      exit 1
+    end
+    notification = notifications.first
+  else
+    notification = Utts::Notifications.find(id_or_latest)
+    unless notification
+      warn "Notification not found: #{id_or_latest}"
+      exit 1
+    end
+  end
+
+  if notification.metadata.nil? || notification.metadata['action'].nil?
+    warn "No action defined for notification: #{notification.id}"
+    exit 1
+  end
+
+  puts "Activating: #{notification.caller || notification.id}"
+  Utts::Notifications.activate(notification.id)
+end
+
+def dismiss_notification(id_or_latest)
+  unless notifications_available?
+    warn "Dismiss requires Tier 3 (bundle install)"
+    exit 1
+  end
+
+  require_notifications
+
+  if id_or_latest == :latest
+    notifications = Utts::Notifications.list(limit: 1)
+    if notifications.empty?
+      warn "No notifications to dismiss"
+      exit 1
+    end
+    notification = notifications.first
+    Utts::Notifications.dismiss(notification.id)
+    puts "Dismissed: #{notification.caller || notification.id}"
+  else
+    result = Utts::Notifications.dismiss(id_or_latest)
+    if result
+      puts "Dismissed: #{id_or_latest}"
+    else
+      warn "Notification not found: #{id_or_latest}"
+      exit 1
+    end
+  end
+end
+
+def dismiss_all_notifications
+  unless notifications_available?
+    warn "Dismiss requires Tier 3 (bundle install)"
+    exit 1
+  end
+
+  require_notifications
+  Utts::Notifications.dismiss_all
+  puts "All notifications dismissed"
+end
+
+def open_notifications_ui
+  notifications_ui = File.join(UTTS_DIR, 'scripts', 'notifications.rb')
+  unless File.exist?(notifications_ui)
+    warn "Notification UI not found. Tier 3 required."
+    warn "Expected: #{notifications_ui}"
+    exit 1
+  end
+
+  # Check for running instance via PID file
+  pid_file = File.join(CONFIG_DIR, 'notifications.pid')
+  if File.exist?(pid_file)
+    pid = File.read(pid_file).strip.to_i
+    begin
+      Process.kill(0, pid) # Check if process is running
+      # Process is running, try to find URL and open browser
+      url_file = File.join(CONFIG_DIR, 'notifications.url')
+      if File.exist?(url_file)
+        url = File.read(url_file).strip
+        system('open', url)
+        puts "Opened existing notification dashboard: #{url}"
+        exit 0
+      end
+    rescue Errno::ESRCH, Errno::EPERM
+      # Process not running, clean up stale PID file
+      FileUtils.rm_f(pid_file)
+    end
+  end
+
+  # Start new instance
+  puts "Starting notification dashboard..."
+  exec('ruby', notifications_ui)
+end
+
 # --- Main ---
 
 options = {
@@ -410,8 +537,12 @@ parser = OptionParser.new do |opts|
     exit 0
   end
 
-  opts.on('--caller CALLER', 'Caller identifier for notification logging') do |c|
+  opts.on('--caller CALLER', 'Caller identifier (project name)') do |c|
     options[:caller] = c
+  end
+
+  opts.on('--intent INTENT', 'Session intent (combines with --caller as "caller: intent")') do |i|
+    options[:intent] = i
   end
 
   opts.on('--metadata JSON', 'JSON metadata for notification') do |m|
@@ -433,6 +564,22 @@ parser = OptionParser.new do |opts|
 
   opts.on('--silent', 'Log notification without audio or system notification') do
     options[:silent] = true
+  end
+
+  opts.on('--activate [ID]', 'Trigger action for notification (most recent if no ID)') do |id|
+    options[:activate] = id || :latest
+  end
+
+  opts.on('--dismiss [ID]', 'Dismiss notification (most recent if no ID)') do |id|
+    options[:dismiss] = id || :latest
+  end
+
+  opts.on('--dismiss-all', 'Dismiss all notifications') do
+    options[:dismiss_all] = true
+  end
+
+  opts.on('--notifications', 'Open notification dashboard (StreamWeaver UI)') do
+    options[:notifications] = true
   end
 
   opts.on('-h', '--help', 'Show this help') do
@@ -460,6 +607,30 @@ end
 # Handle --replay
 if options[:replay]
   replay_notification(options[:replay])
+  exit 0
+end
+
+# Handle --activate
+if options[:activate]
+  activate_notification(options[:activate])
+  exit 0
+end
+
+# Handle --dismiss
+if options[:dismiss]
+  dismiss_notification(options[:dismiss])
+  exit 0
+end
+
+# Handle --dismiss-all
+if options[:dismiss_all]
+  dismiss_all_notifications
+  exit 0
+end
+
+# Handle --notifications
+if options[:notifications]
+  open_notifications_ui
   exit 0
 end
 
@@ -526,5 +697,5 @@ unless options[:silent]
   end
 end
 
-# Log notification
-log_notification(safe_message, options, voice)
+# Log notification (--silent skips macOS notification)
+log_notification(safe_message, options, voice, send_system_notification: !options[:silent])
