@@ -10,7 +10,10 @@
 #   --engine ENGINE    TTS engine: 'piper', 'say', or 'espeak' (auto-detected)
 #   --voice VOICE      Specific voice name (engine-dependent)
 #   --agent TYPE       Use agent-specific voice mapping
-#   --rate RATE        Speaking rate for 'say' engine (default: 200)
+#   --rate RATE        Speaking rate in wpm (default: 200, affects all engines)
+#   --pitch PITCH      Pitch 0-99 (default: 45, higher=higher pitch/more expressive)
+#   --emotion EMOTION  Emotion for prosody (excited, celebration, success, caution, urgent, question)
+#   --list-emotions    List available emotions and their detection patterns
 #   --mute             Mute TTS (creates control file)
 #   --unmute           Unmute TTS (removes control file)
 #   --status           Show mute status
@@ -54,6 +57,87 @@ VOICE_CONFIG_FILE = File.join(CONFIG_DIR, 'voice-mappings.yaml')
 
 # Configuration
 DEFAULT_RATE = ENV.fetch('TTS_RATE', '200')
+DEFAULT_PITCH = ENV.fetch('TTS_PITCH', '45')  # 0-99 for say, mapped for others
+
+# Prosody defaults per engine
+# say: rate=wpm, pitch=pbas (0-99, 45=normal), pmod=pitch modulation (0-127, 60=normal)
+# piper: length_scale (1.0=normal, <1=faster), noise_scale (0.667=normal, higher=more expressive)
+# espeak: rate=wpm (175=normal), pitch=0-99 (50=normal)
+PROSODY_DEFAULTS = {
+  'say' => { rate: 200, pitch: 45, pmod: 60 },
+  'piper' => { length_scale: 1.0, noise_scale: 0.667 },
+  'espeak' => { rate: 175, pitch: 50 }
+}.freeze
+
+# Emotion detection patterns (from pai-voice-system prosody-enhancer)
+# Used for auto-detecting emotional tone and applying appropriate prosody
+EMOTION_PATTERNS = {
+  excited: [
+    /\b(breakthrough|discovered|found it|eureka|amazing|incredible|wow)\b/i,
+    /!{2,}|💥|🔥|⚡/
+  ],
+  celebration: [
+    /\b(finally|at last|we did it|victory|hooray|woohoo)\b/i,
+    /\b(all .* passing|zero errors|tests? pass)\b/i,
+    /🎉|🥳|🎊/
+  ],
+  success: [
+    /\b(completed|finished|done|fixed|resolved|ready|working)\b/i,
+    /✅|✨|👍/
+  ],
+  caution: [
+    /\b(warning|careful|partial|incomplete|issue|problem)\b/i,
+    /⚠️|🟡/
+  ],
+  urgent: [
+    /\b(urgent|critical|failing|broken|alert|error|failed)\b/i,
+    /🚨|❌|🔴/
+  ],
+  question: [
+    /\b(needs? input|waiting|question|help|stuck)\b/i,
+    /\?{2,}|🤔|❓/
+  ]
+}.freeze
+
+# Prosody settings per emotion per engine
+# Emotion affects rate, pitch (pbas), and pitch modulation (pmod)
+EMOTION_PROSODY = {
+  excited: {
+    'say' => { rate: 240, pitch: 50, pmod: 100 },
+    'piper' => { length_scale: 0.85, noise_scale: 0.8 },
+    'espeak' => { rate: 210, pitch: 60 }
+  },
+  celebration: {
+    'say' => { rate: 220, pitch: 48, pmod: 90 },
+    'piper' => { length_scale: 0.9, noise_scale: 0.75 },
+    'espeak' => { rate: 200, pitch: 55 }
+  },
+  success: {
+    'say' => { rate: 200, pitch: 45, pmod: 70 },
+    'piper' => { length_scale: 1.0, noise_scale: 0.7 },
+    'espeak' => { rate: 180, pitch: 50 }
+  },
+  caution: {
+    'say' => { rate: 170, pitch: 38, pmod: 40 },
+    'piper' => { length_scale: 1.15, noise_scale: 0.5 },
+    'espeak' => { rate: 150, pitch: 40 }
+  },
+  urgent: {
+    'say' => { rate: 260, pitch: 55, pmod: 110 },
+    'piper' => { length_scale: 0.75, noise_scale: 0.9 },
+    'espeak' => { rate: 220, pitch: 70 }
+  },
+  question: {
+    'say' => { rate: 190, pitch: 47, pmod: 75 },
+    'piper' => { length_scale: 1.05, noise_scale: 0.7 },
+    'espeak' => { rate: 170, pitch: 52 }
+  },
+  neutral: {
+    'say' => { rate: 200, pitch: 42, pmod: 60 },
+    'piper' => { length_scale: 1.0, noise_scale: 0.667 },
+    'espeak' => { rate: 175, pitch: 50 }
+  }
+}.freeze
 
 # Agent voice mappings
 AGENT_VOICES = {
@@ -173,11 +257,22 @@ end
 
 # --- TTS Engines ---
 
-def speak_say(message, voice, rate)
-  system('/usr/bin/say', '-v', voice, '-r', rate, message)
+def speak_say(message, voice, rate, pitch = nil)
+  # Use embedded prosody commands for pitch control
+  # [[rate N]] = words per minute
+  # [[pbas N]] = pitch base (0-99, 45=normal)
+  # [[pmod N]] = pitch modulation/range (0-127, 60=normal)
+  if pitch
+    pitch_val = pitch.to_i.clamp(0, 99)
+    # Higher pitch also benefits from slightly higher modulation
+    pmod = (60 + (pitch_val - 45) * 0.5).clamp(30, 100).to_i
+    prosody_prefix = "[[pbas #{pitch_val}; pmod #{pmod}]]"
+    message = "#{prosody_prefix} #{message}"
+  end
+  system('/usr/bin/say', '-v', voice, '-r', rate.to_s, message)
 end
 
-def speak_piper(message, voice)
+def speak_piper(message, voice, rate = nil, pitch = nil, emotion_prosody = nil)
   voice_path = File.join(UTTS_DIR, 'voices', "#{voice}.onnx")
   config_path = "#{voice_path}.json"
 
@@ -200,6 +295,38 @@ def speak_piper(message, voice)
 
   piper_bin = File.join(UTTS_DIR, '.venv', 'bin', 'piper')
 
+  # Determine length_scale and noise_scale
+  # Priority: CLI flags > emotion_prosody > defaults
+  if emotion_prosody && emotion_prosody[:length_scale]
+    # Use emotion-based prosody directly
+    length_scale = emotion_prosody[:length_scale]
+    noise_scale = emotion_prosody[:noise_scale] || 0.667
+    # CLI rate/pitch can still override
+    if rate
+      base_rate = 200.0
+      length_scale = (base_rate / rate.to_f).clamp(0.5, 2.0)
+    end
+    if pitch
+      pitch_val = pitch.to_i
+      noise_scale = (0.4 + (pitch_val / 99.0) * 0.5).clamp(0.3, 1.0)
+    end
+  else
+    # Calculate from rate/pitch (Phase 1 behavior)
+    length_scale = if rate
+                     base_rate = 200.0
+                     (base_rate / rate.to_f).clamp(0.5, 2.0)
+                   else
+                     1.0
+                   end
+
+    noise_scale = if pitch
+                    pitch_val = pitch.to_i
+                    (0.4 + (pitch_val / 99.0) * 0.5).clamp(0.3, 1.0)
+                  else
+                    0.667
+                  end
+  end
+
   # Escape for shell
   escaped_msg = message.gsub("'", "'\\''")
   escaped_piper = piper_bin.gsub("'", "'\\''")
@@ -208,15 +335,31 @@ def speak_piper(message, voice)
   cmd = "echo '#{escaped_msg}' | " \
         "'#{escaped_piper}' " \
         "--model '#{escaped_voice}' " \
+        "--length-scale #{length_scale} " \
+        "--noise-scale #{noise_scale} " \
         "--output-raw 2>/dev/null | " \
         "play -q -r #{sample_rate} -b 16 -e signed -c 1 -t raw -"
 
   system(cmd)
 end
 
-def speak_espeak(message, voice)
+def speak_espeak(message, voice, rate = nil, pitch = nil)
   espeak_cmd = system('which espeak-ng > /dev/null 2>&1') ? 'espeak-ng' : 'espeak'
-  system(espeak_cmd, '-v', voice, message)
+
+  args = [espeak_cmd, '-v', voice]
+
+  # espeak rate: -s WPM (default 175)
+  if rate
+    args += ['-s', rate.to_s]
+  end
+
+  # espeak pitch: -p 0-99 (default 50)
+  if pitch
+    args += ['-p', pitch.to_i.clamp(0, 99).to_s]
+  end
+
+  args << message
+  system(*args)
 end
 
 # --- Voice Listing ---
@@ -273,6 +416,35 @@ def list_agents(engine)
   if File.exist?(VOICE_CONFIG_FILE)
     puts "\n  (loaded from #{VOICE_CONFIG_FILE})"
   end
+end
+
+# --- Emotion Detection ---
+
+def detect_emotion(message)
+  EMOTION_PATTERNS.each do |emotion, patterns|
+    patterns.each do |pattern|
+      return emotion if pattern.match?(message)
+    end
+  end
+  :neutral
+end
+
+def list_emotions
+  puts "Available emotions and their triggers:\n\n"
+  EMOTION_PATTERNS.each do |emotion, patterns|
+    puts "  #{emotion}:"
+    patterns.each do |pattern|
+      # Show a readable version of the pattern
+      puts "    #{pattern.source}"
+    end
+    puts
+  end
+  puts "  neutral: (default when no patterns match)"
+end
+
+def get_emotion_prosody(emotion, engine)
+  settings = EMOTION_PROSODY.dig(emotion, engine) || EMOTION_PROSODY.dig(:neutral, engine)
+  settings || {}
 end
 
 def sanitize_message(message)
@@ -506,8 +678,21 @@ parser = OptionParser.new do |opts|
     options[:agent] = a.downcase
   end
 
-  opts.on('--rate RATE', 'Speaking rate for say engine') do |r|
+  opts.on('--rate RATE', 'Speaking rate (wpm for say/espeak, affects speed for piper)') do |r|
     options[:rate] = r
+  end
+
+  opts.on('--pitch PITCH', 'Pitch (0-99, 45=normal for say, affects expressiveness for piper)') do |p|
+    options[:pitch] = p
+  end
+
+  opts.on('--emotion EMOTION', 'Emotion for prosody (auto-detected from message if not specified)') do |e|
+    options[:emotion] = e.downcase.to_sym
+  end
+
+  opts.on('--list-emotions', 'List available emotions and their triggers') do
+    list_emotions
+    exit 0
   end
 
   opts.on('--mute', 'Mute TTS') do
@@ -685,15 +870,60 @@ voice = if options[:voice]
           ENV['TTS_VOICE'] || DEFAULT_VOICES[engine]
         end
 
+# Detect emotion (from original message, not sanitized)
+# Use explicit --emotion if provided, otherwise auto-detect
+emotion = options[:emotion] || detect_emotion(message)
+
+# Get emotion-based prosody settings
+emotion_prosody = get_emotion_prosody(emotion, engine)
+
+# Determine final prosody settings
+# For say/espeak: use rate (wpm) and pitch (0-99)
+# For piper: use length_scale and noise_scale from emotion_prosody
+if engine == 'piper'
+  # For piper, use emotion prosody directly (length_scale, noise_scale)
+  # CLI flags override emotion prosody if specified
+  final_rate = options[:rate] if options[:rate] && options[:rate] != DEFAULT_RATE
+  final_pitch = options[:pitch]
+  # Pass emotion prosody to piper for length_scale/noise_scale
+  piper_prosody = emotion_prosody
+else
+  # For say/espeak: use rate and pitch
+  final_rate = if options[:rate] && options[:rate] != DEFAULT_RATE
+                 options[:rate]
+               elsif emotion_prosody[:rate]
+                 emotion_prosody[:rate]
+               else
+                 options[:rate]
+               end
+
+  final_pitch = if options[:pitch]
+                  options[:pitch]
+                elsif emotion_prosody[:pitch]
+                  emotion_prosody[:pitch]
+                else
+                  nil
+                end
+end
+
+# Debug output if UTTS_DEBUG is set
+if ENV['UTTS_DEBUG']
+  if engine == 'piper'
+    warn "Emotion: #{emotion} | Engine: piper | length_scale: #{piper_prosody[:length_scale]} | noise_scale: #{piper_prosody[:noise_scale]}"
+  else
+    warn "Emotion: #{emotion} | Engine: #{engine} | Rate: #{final_rate} | Pitch: #{final_pitch || 'default'}"
+  end
+end
+
 # Speak (unless --silent)
 unless options[:silent]
   case engine
   when 'say'
-    speak_say(safe_message, voice, options[:rate])
+    speak_say(safe_message, voice, final_rate, final_pitch)
   when 'piper'
-    speak_piper(safe_message, voice)
+    speak_piper(safe_message, voice, final_rate, final_pitch, piper_prosody)
   when 'espeak'
-    speak_espeak(safe_message, voice)
+    speak_espeak(safe_message, voice, final_rate, final_pitch)
   end
 end
 

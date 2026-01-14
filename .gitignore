@@ -15,3 +15,5 @@ voices/*.onnx.json
 # IDE
 .idea/
 *.swp
+voices
+.claude/
